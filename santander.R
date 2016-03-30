@@ -1,43 +1,80 @@
+library(readr) # CSV file I/O, e.g. the read_csv function
+library(xgboost)
+
+# Reading the data
+setwd("C:/Users/Kyle/Desktop/Santander")
+dat_train <- read.csv("train.csv", stringsAsFactors = F)
+dat_test <- read.csv("test.csv", stringsAsFactors = F)
+
+#Set unknown nationality to most common
+dat_train$var3[dat_train$var3 == -999999] <- 2
+dat_test$var3[dat_test$var3 == -999999] <- 2
+
+# Mergin the test and train data
+dat_test$TARGET <- NA
+all_dat <- rbind(dat_train, dat_test)
+
+# Removing the constant variables
+train_names <- names(dat_train)[-1]
+for (i in train_names)
+{
+  if (class(all_dat[[i]]) == "integer") 
+  {
+    u <- unique(all_dat[[i]])
+    if (length(u) == 1) 
+    {
+      all_dat[[i]] <- NULL
+    } 
+  }
+}
+
+#Removing duplicate columns
+train_names <- names(all_dat)[-1]
+fac <- data.frame(fac = integer())    
+
+for(i in 1:length(train_names))
+{
+  if(i != length(train_names))
+  {
+    for (k in (i+1):length(train_names)) 
+    {
+      if(identical(all_dat[,i], all_dat[,k]) == TRUE) 
+      {
+        fac <- rbind(fac, data.frame(fac = k))
+      }
+    }
+  }
+}
+same <- unique(fac$fac)
+all_dat <- all_dat[,-same]
+
+#Removing hghly correlated variables
+cor_v<-abs(cor(all_dat))
+diag(cor_v)<-0
+cor_v[upper.tri(cor_v)] <- 0
+cor_f <- as.data.frame(which(cor_v > 0.85, arr.ind = T))
+all_dat <- all_dat[,-unique(cor_f$row)]
+
+# Splitting the data for model
+train <- all_dat[1:nrow(dat_train), ]
+test <- all_dat[-(1:nrow(dat_train)), ]
 
 
-library(caret)
-library(plyr)
-library(data.table)
-library(e1071)
-library(snowfall)
+#Building the model
+set.seed(88)
+param <- list("objective" = "binary:logistic",booster = "gbtree",
+              "eval_metric" = "auc",colsample_bytree = 0.85, subsample = 0.95)
 
+y <- as.numeric(train$TARGET)
 
-setwd("/Users/jolee/Desktop/santander")
+#AUC was highest in 310th round during cross validation
+xgbmodel <- xgboost(data = as.matrix(train[,-c(1,151)]), params = param,
+                    nrounds = 310, max.depth = 5, eta = 0.03,
+                    label = y, maximize = T,
+                    print.every.n = 10)
 
-train.df <- read.csv("train.csv")
-test.df <- read.csv("test.csv")
+#Prediction
+res <- predict(xgbmodel, newdata = data.matrix(test[,-c(1,151)]))
+res <- data.frame(ID = test$ID, TARGET = res)
 
-
-head(train.df)
-
-
-
-class(train.df$TARGET)
-
-train.df$TARGET <- as.factor(train.df$TARGET)
-
-
-fitControl <- trainControl(## 10-fold CV
-  method = "repeatedcv",
-  number = 10,
-  ## repeated ten times
-  repeats = 10)
-sfInit(parallel=TRUE, cpus=4)
-
-#wishlist: this uses huge amount of serial time - consider selective export!
-sfExportAll(except=NULL) # Export all objects to cluster
-
-
-gbmFit1 <- train(TARGET ~ ., data = train.df,
-                 method = "xgbTree",
-                 trControl = fitControl,
-                 ## This last option is actually one
-                 ## for gbm() that passes through
-                 verbose = FALSE)
-
-sfStop()
+write.csv(res, "submission.csv", row.names = FALSE)
